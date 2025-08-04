@@ -23,7 +23,7 @@ $H_{sa} \leftarrow H_{sa} + \alpha_{SR}(\mathbf{1_{sa}} + \gamma H_{s'a'} - H_{s
 
 $PE = r + \gamma Q_{s'a'} - Q_{sa}$
 
-$W \leftarrow W + \alpha_{TD} \, \text{PE} \, H_{sa,i} \forall i$
+$W \leftarrow W + \alpha_{TD}  \text{PE} H_{sa,i} \ \ \forall i$
 
 - decision-making (value computation)
 
