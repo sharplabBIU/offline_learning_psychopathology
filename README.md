@@ -21,9 +21,9 @@ $H_{sa} \leftarrow H_{sa} + \alpha_{SR}(\mathbf{1_{sa}} + \gamma H_{s'a'} - H_{s
 2. **Reward-weight TD update**:
 - learning
 
-$PE = r + \gamma Q_{s'a'} - Q_{sa}$
+$\delta = r + \gamma Q_{s'a'} - Q_{sa}$
 
-$W \leftarrow W + \alpha_{TD}  \text{PE} H_{sa,i} \ \ \forall i$
+$W \leftarrow W + \alpha_{TD} \ \delta \  H_{sa,i} \ \ \forall i$
 
 - decision-making (value computation)
 
