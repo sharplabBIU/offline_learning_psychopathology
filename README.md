@@ -5,20 +5,81 @@ This repository collects **computational simulations of two offline-learning age
 
 | Directory | Model | Original paper |
 |-----------|-------|----------------|
-| `Initial_dyna_sims/` | **SR-DYNA agent** – successor-representation (SR) updated with DYNA-style offline replay | Russek et al., 2017 (PLOS Comp. Biol.) |
-| `Agrawal_simulations/` | **Replay‑with‑time‑cost agent** – prioritised replay that trades off improvement in future reward against opportunity cost of time | Agrawal et al., 2021 (Psych. Review) |
+| `initial_dyna_sims/` | **SR-DYNA** – successor-representation learner with DYNA-style offline replay | Russek et al., 2017, *PLoS Comp Biol* |
+| `Agrawal_simulations/` | **Replay-with-Time-Cost** – rational replay that weighs benefit vs. opportunity-cost | Agrawal et al., 2021, *Psychological Review* |
 
 ---
 
-## 1  Successor‑Representation DYNA (`Initial_dyna_sims/`)
+## 1  Successor-Representation DYNA (`initial_dyna_sims/`)
 
-The SR‑DYNA agent combines:
+### Algorithm at a glance
 
-1. **Online SR learning** – after every real state–action transition the agent performs TD(0) updates on the successor matrix \(M\).
-2. **Offline replay** – after each episode it samples past experience from a priority queue and performs additional SR updates (`TOTAL_EXPERIENCES_OFFLINE_TRAINING` in the code).
-3. **Q‑value computation** – action values are obtained on‑demand by the dot‑product \(Q = M \cdot R\), giving near‑model‑based flexibility at a lower computational cost.
+1. **Online SR update** after every real step
 
-**Key code knobs**
+   \[ H_{sa} \leftarrow H_{sa} + \alpha_{SR}\big( \mathbf 1_{sa} + \gamma \, H_{s'a'} - H_{sa} \big) \]
+
+2. **Reward-weight TD update**
+
+   *PE* = \(r + \gamma Q_{s'a'} - Q_{sa}\);  
+   \(W \leftarrow W + \alpha_{TD}\,\text{PE}\,\frac{H_{sa}}{\lVert H_{sa}\rVert}\)
+
+3. **Offline DYNA replay** (when a “rest” episode or specific trial is flagged):  
+   draw **k** past transitions from memory (biased toward recency) and repeat step&nbsp;1 using the greedy action \(a^* = \arg\max_a Q(s',a)\).
+
+The SR encodes long‑run state–action occupancies; coupled with learned reward weights this allows the agent to behave almost model‑based, yet learnable with TD.
+
+### Major code switches
+
+| Argument (constructor) | Typical value in demo | Role |
+|---|---|---|
+| `maze_size` | 6 | Side of square grid world (\#states = `maze_size²`) |
+| `gamma` | 0.99 | Discount factor |
+| `epsilon` | 0.05 | Epsilon‑greedy exploration when choosing actions |
+| `alpha_sr` | 0.2 | Learning rate for SR updates (online + offline unless `dynamic_lr=True`) |
+| `alpha_td` | 0.2 | Learning rate for reward weights `W` |
+| `k` | 1000 | **Number of memory samples** processed per offline burst (`update_sr_offline`) |
+| `dynamic_lr` | `False` | If `True`, SR LR becomes 1/visit‑count for each state‑action |
+| `reward_location`, `punishment_location` | `(3,1)` / `(1,2)` | Terminal goal / penalty coordinates (row, col) |
+| `reward_value`, `punishment_value` | 100 / −1 | Outcome magnitudes |
+| `obstacles` | `[]` | List of blocked cells |
+| `rest_episode` | `5` or `-1` | Engage offline replay only in these episode indices (`-1` → every episode) |
+| `specific_trial` | `2` | Trial # inside an episode at which replay occurs |
+
+**Outputs of interest**
+
+* `H` – successor matrix (|SA| × |SA|)
+* `W` – learned reward weights
+* `Q` – planned action‑values (`H·W`)
+* `episode_goal_counts` – goal hits per episode (for plotting learning curves)
+
+---
+
+## 2  Replay-with-Time-Cost (`Agrawal_simulations/`)
+
+Agrawal et al. formalised a rational principle for deciding **when** to engage replay: the agent fires a burst only if the expected improvement in Q outweighs the *opportunity cost* of the time the burst would consume.
+
+```text
+for each step:
+    take action → observe (s, a, r, sʹ)
+    store transition
+    update Q online (TD)
+    while burst_len < BURST_MAX and max(EVB_C) > 0:
+        pick memory with highest EVB_C = Gain × Need − c_time
+        perform replay update (α_replay · TD)
+```
+
+### Key parameters in the demo
+
+| Parameter | Meaning |
+|---|---|
+| `gamma_learn` / `gamma_replay` | Discount in real vs. imagined updates (lower `gamma_replay` models anxiety) |
+| `burst_max` | Hard cap on replays per burst |
+| `beta` | Softmax inverse‑temperature |
+| `td_min` | TD‑error convergence threshold |
+
+Lowering `gamma_replay` – the **anxious** setting – makes imagined future rewards smaller, so the agent initiates fewer replays, mirroring empirical findings.
+
+### Key code knobs
 
 | Parameter | Role |
 |-----------|------|
@@ -27,60 +88,17 @@ The SR‑DYNA agent combines:
 | `REWARD_SCALE`, `PROBABILITY_SCALE` | magnitude / likelihood of outcome states |
 | `TOTAL_EXPERIENCES_OFFLINE_TRAINING` | number of replay updates after each real step (controls the DYNA loop length) |
 
-Setting **no replay** (`TOTAL_EXPERIENCES_OFFLINE_TRAINING = 0`) yields a vanilla SR learner; extensive replay approximates a fully model‑based planner.
-
----
-
-## 2  Replay‑with‑Time‑Cost (`Agrawal_simulations/`)
-
-Agrawal et al. formalised a rational principle for deciding **_when_** to engage replay: fire a burst only if the expected value of perfecting Q outweighs the *opportunity cost* of the time it would take.
-
-```text
-for each step:
-    take action → observe (s, a, r, sʹ)
-    store transition
-    update Q online (TD)
-    while burst_len < BURST_MAX and max(EVB_C) > 0:
-        pick memory with highest EVB_C
-        perform replay update (α_replay ⋅ TD)
-```
-
-**EVB\_C** = _Gain × Need – time‑cost_.
-
-### Healthy vs Anxious manipulation
-
-* `gamma_learn` – discount factor for *online* learning.  
-* `gamma_replay` – discount when evaluating replay.
-
-```python
-if AGENT_TYPE == "healthy":
-    gamma_replay = gamma_learn
-else:  # anxious
-    gamma_replay = gamma_learn - 0.2
-```
-
-Lower \(\gamma_{\text{replay}}\) makes imagined future rewards smaller, so the **anxious** agent triggers fewer replay events and learns less offline.
-
-**Other flags**
-
-| Parameter | Meaning |
-|-----------|---------|
-| `burst_max` | max memories updated per burst |
-| `td_min` | TD‑error convergence threshold |
-| `beta` | softmax inverse‑temperature |
-
----
-
-## Quick start
+## Quick start
 
 ```bash
-# create env
 conda create -n offline_learning python=3.11 numpy pandas matplotlib jupyter -y
 conda activate offline_learning
 
-# run notebooks
-jupyter notebook Initial_dyna_sims/SR_dyna_demo.ipynb
-jupyter notebook Agrawal_simulations/replay_cost_demo.ipynb
+# SR‑DYNA demo
+python initial_dyna_sims/run_srdyna_demo.py
+
+# Agrawal replay demo
+python Agrawal_simulations/run_replay_demo.py
 ```
 
 ---
@@ -90,14 +108,14 @@ jupyter notebook Agrawal_simulations/replay_cost_demo.ipynb
 ```bibtex
 @article{Russek2017SRDyna,
   title  = {Predictive representations can link model-based reinforcement learning to model-free mechanisms},
-  author = {Russek, E.M. and Momennejad, I. and Botvinick, M. and Gershman, S. and Daw, N.},
+  author = {Russek, Erin M. and Momennejad, Ida and Botvinick, Matthew M. and Gershman, Samuel J. and Daw, Nathaniel D.},
   journal= {PLoS Computational Biology},
   year   = 2017
 }
 
 @article{Agrawal2021ReplayCost,
   title  = {The Temporal Dynamics of Opportunity Costs: A Normative Account of Cognitive Fatigue and Boredom},
-  author = {Agrawal, M. and Mattar, M. and Cohen, J. and Daw, N.},
+  author = {Agrawal, Manaswi and Mattar, A. M. Grant and Cohen, Jonathan D. and Daw, Nathaniel D.},
   journal= {Psychological Review},
   year   = 2021
 }
@@ -105,6 +123,4 @@ jupyter notebook Agrawal_simulations/replay_cost_demo.ipynb
 
 ---
 
-## License
 
-MIT – see `LICENSE`.
