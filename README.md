@@ -19,10 +19,15 @@ This repository collects **computational simulations of two offline-learning age
 $$ H_{sa} \leftarrow H_{sa} + \alpha_{SR}(\mathbf 1_{sa} + \gamma \, H_{s'a'} - H_{sa}) $$
 
 2. **Reward-weight TD update**:
+- learning
 
 $PE = r + \gamma Q_{s'a'} - Q_{sa}$
 
-$ W \leftarrow W + \alpha_{TD}\,\text{PE}\,\frac{H_{sa}}{\lVert H_{sa}\rVert} $
+$ W \leftarrow W + \alpha_{TD} \, \text{PE} \, H_{sa,i} \forall i $
+
+- decision-making (value computation)
+
+$Q_{s,a} = W_{sa} \dot H_{sa}$
 
 
 
