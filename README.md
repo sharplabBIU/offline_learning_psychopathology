@@ -22,7 +22,6 @@ This repository collects **computational simulations of two offline-learning age
 
    $$ PE = r + \gamma Q_{s'a'} - Q_{sa} $$
 
-   $$ W \leftarrow W + \alpha_{TD}\,\text{PE}\,\frac{H_{sa}}{\lVert H_{sa}\rVert} $$
 
 3. **Offline DYNA replay** (when a “rest” episode or specific trial is flagged):  
    draw **k** past transitions from memory (biased toward recency) and repeat step&nbsp;1 using the greedy action \(a^* = \arg\max_a Q(s',a)\).
