@@ -20,7 +20,8 @@ This repository collects **computational simulations of two offline-learning age
 
 2. **Reward-weight TD update**
 
-   $$ *PE* = (r + \gamma Q_{s'a'} - Q_{sa})SS $$
+   $$ PE = (r + \gamma Q_{s'a'} - Q_{sa}) $$
+   
    $$ (W \leftarrow W + \alpha_{TD}\,\text{PE}\,\frac{H_{sa}}{\lVert H_{sa}\rVert}\) $$
 
 3. **Offline DYNA replay** (when a “rest” episode or specific trial is flagged):  
