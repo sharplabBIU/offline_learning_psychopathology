@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import random
+from itertools import product
 
 # ------------------------------------------------------------
 # 1.  Environment
@@ -9,14 +10,17 @@ import random
 GRID_SIZE   = 3
 ACTIONS     = {0: (-1, 0), 1: (0, 1), 2: (1, 0), 3: (0, -1)}  # U, R, D, L
 N_ACTIONS   = 4
-REWARD_ST   = (0, 0)
-PUNISH_ST   = (2, 2)
-REWARD_SCALE = 20
-PROBABILITY_SCALE=0.5
-TRAVEL_TO_REWARD_TRIAL=1
-CHANGE_REWARD_INTERVAL=20
-TOTAL_EXPERIENCES_ONLINE=100
-TOTAL_EXPERIENCES_OFFLINE_TRAINING=1000
+
+REWARD_SCALE = 2
+PROBABILITY_SCALE=0.3
+INIT_EXPERIENCE_EPISODE=1
+CHANGE_REWARD_INTERVAL=5
+TOTAL_EXPERIENCES_ONLINE=1
+TOTAL_EPISODES_ONLINE=50
+TOTAL_EXPERIENCES_OFFLINE_TRAINING=500
+GAMMA_POS=0.05
+GAMMA_NEG=0.95
+INV_TEMP=3
 # ----- helpers ------------------------------------------------
 
 def clip(z: int) -> int:
@@ -24,7 +28,7 @@ def clip(z: int) -> int:
     return max(0, min(z, GRID_SIZE - 1))
 
 
-def step(state, a,t):
+def step(state, a,t,rwd,pun):
     
     dx, dy = ACTIONS[a]
     nxt    = (clip(state[0] + dx), clip(state[1] + dy))
@@ -33,8 +37,8 @@ def step(state, a,t):
     # current_outcome=random.random() < PROBABILITY_SCALE
     current_outcome=1
 
-    r      = REWARD_SCALE*current_outcome if nxt == REWARD_ST else \
-             -REWARD_SCALE*current_outcome if nxt == PUNISH_ST else 0
+    r      = REWARD_SCALE*current_outcome if nxt == rwd else \
+             -REWARD_SCALE*current_outcome if nxt == pun else 0
         
     return nxt, r
 
@@ -69,22 +73,25 @@ idx2state = {v: k for k, v in state2idx.items()}
 def simulate_condition(agent_type: str,
                        first_outcome: str,
                        tau: float,
+                       n_episodes: int = TOTAL_EPISODES_ONLINE,
                        n_steps: int = TOTAL_EXPERIENCES_ONLINE,
                        n_steps_explore: int = TOTAL_EXPERIENCES_OFFLINE_TRAINING,
                        alpha_replay=0.5,
-                       gamma_pos: float = 0.05,
-                       gamma_neg: float = 0.95,
+                       gamma_pos: float = GAMMA_POS,
+                       gamma_neg: float = GAMMA_NEG,
                        gamma_learn: float = 0.99,
-                       trial_rwd: int = TRAVEL_TO_REWARD_TRIAL,
+                       ep_init_rwd: int = INIT_EXPERIENCE_EPISODE,
                        change_rwd: int = CHANGE_REWARD_INTERVAL,
-                       beta: float = 5,
+                       beta: float = INV_TEMP,
                        td_min: float = 1e-8,
                        burst_max: int = 200):
     """Run one episode and return (ΔV(s₀), total_replay_backups)."""
-
+    
     # ---------- initialise value and SR ----------------------
     Q  = np.zeros((GRID_SIZE, GRID_SIZE, N_ACTIONS))
     SR = np.zeros((GRID_SIZE ** 2, GRID_SIZE ** 2))+1/9
+    REWARD_ST   = (0, 0)
+    PUNISH_ST   = (2, 2)
 
     # ---------- counters for dynamic learning‑rates ----------
     # 1/n where n is *total* update count (real + replay) for that state
@@ -101,7 +108,7 @@ def simulate_condition(agent_type: str,
     
     def legal_actions(state):
         """Return a list of actions whose next-state ≠ current state."""
-        return [a for a in range(N_ACTIONS) if step(state, a,1)[0] != state]
+        return [a for a in range(N_ACTIONS) if step(state, a,1,(0,0),(0,1))[0] != state]
 
     def pick_action(state, Q, beta=5.0):
         """Soft-max policy over legal actions only."""
@@ -115,6 +122,7 @@ def simulate_condition(agent_type: str,
     # ---------- memory & bookkeeping -------------------------
     memory       = []     # list of (s, a, r, s')
     total_replay = 0
+    total_reward=0
     gamma_curr   = gamma_pos
     V_start      = 0
     gam_pos=gamma_pos
@@ -217,70 +225,78 @@ def simulate_condition(agent_type: str,
     # --------------------------------------------------------
     # teleport to specific valence‑defining starting position
     
+    for e in range(n_episodes):
+        s_t = random.choice(list(state2idx))
+        a_t = np.random.choice(N_ACTIONS, p=softmax(Q[s_t], beta))
 
-    for t in range(n_steps):
+        
         if first_outcome == "Positive":
-            if t==trial_rwd:
+            if e==ep_init_rwd:
                 s_t, a_t = (0, 1), 3  # move left into +reward
         if first_outcome == "Negative":
-            if t==trial_rwd:
+            if e==ep_init_rwd:
                 s_t, a_t = (1, 2), 2  # move left into –punishment
-        
-        if t+1%change_rwd==0:
+
+        if e+1%change_rwd==0:
             REWARD_ST, PUNISH_ST = sample_valence_states()
             # print("New reward @", REWARD_ST, "| punishment @", PUNISH_ST)
 
-        # ----- count, α, and environment step --------------
-        update_counts_RWD[s_t] += 1
-        # a_lr = alpha_RWD(s_t) #if learning rate declines
-        a_lr=alpha_replay+0.1
-        s_next, r_t = step(s_t, a_t,t)
+        for t in range(n_steps):
+            
+            
+            
+            # ----- count, α, and environment step --------------
+            update_counts_RWD[s_t] += 1
+            # a_lr = alpha_RWD(s_t) #if learning rate declines
+            a_lr=alpha_replay
+            s_next, r_t = step(s_t, a_t,t,REWARD_ST,PUNISH_ST)
+            
+            if s_next==s_t:
+                a_t = pick_action(s_t, Q, beta)   # ← new call
+                s_next, r_t = step(s_t, a_t,t,REWARD_ST,PUNISH_ST)
+            
+
+            if (s_t, a_t, r_t, s_next) not in  memory:
+                memory.append((s_t, a_t, r_t, s_next))
+
+            # ----- Q update -----------------------------------
+            td = r_t + gamma_curr * np.max(Q[s_next]) - Q[s_t + (a_t,)]
+            Q[s_t + (a_t,)] += a_lr * td
+
         
-        if s_next==s_t:
-            a_t = pick_action(s_t, Q, beta)   # ← new call
-            s_next, r_t = step(s_t, a_t,t)
-        
-
-        if (s_t, a_t, r_t, s_next) not in  memory:
-            memory.append((s_t, a_t, r_t, s_next))
-
-        # ----- Q update -----------------------------------
-        td = r_t + gamma_curr * np.max(Q[s_next]) - Q[s_t + (a_t,)]
-        Q[s_t + (a_t,)] += a_lr * td
-
-    
 
 
-        # ----- SR update ----------------------------------
-        idx_s, idx_snxt = state2idx[s_t], state2idx[s_next]
-        SR[idx_s, idx_s] += a_lr * (1 - SR[idx_s, idx_s])
-        SR[idx_s, :]     += a_lr * (gamma_curr * SR[idx_snxt, :] - SR[idx_s, :])
+            # ----- SR update ----------------------------------
+            idx_s, idx_snxt = state2idx[s_t], state2idx[s_next]
+            SR[idx_s, idx_s] += a_lr * (1 - SR[idx_s, idx_s])
+            SR[idx_s, :]     += a_lr * (gamma_curr * SR[idx_snxt, :] - SR[idx_s, :])
 
-        # capture starting value (before any replay)
+            # capture starting value (before any replay)
 
-        # ----- replay burst --------------------------------
-        replay_burst(s_t)
+            # ----- replay burst --------------------------------
+            replay_burst(s_t)
 
-        # discount factor adaptation for anxious agents
-        if agent_type == "Anxious":
-            gamma_curr = gamma_neg if r_t < 0 else gamma_pos
+            # discount factor adaptation for anxious agents
+            if agent_type == "Anxious":
+                gamma_curr = gamma_neg if r_t < 0 else gamma_pos
 
-        # advance to next real state & choose action
-        if r_t!=0:
-            s_next = (GRID_SIZE // 2, GRID_SIZE // 2)
-        a_t = np.random.choice(N_ACTIONS, p=softmax(Q[s_next], beta))
-        s_t = s_next
+            # stop episode when winning reward
+            if r_t!=0:
+                total_reward+=r_t
+            if r_t>0:
+                break
+            a_t = np.random.choice(N_ACTIONS, p=softmax(Q[s_next], beta))
+            s_t = s_next
 
     # --------------------------------------------------------
-    delta_V = np.max(Q) - V_start
-    return delta_V, total_replay
+    return total_reward, total_replay
 
 
 # ------------------------------------------------------------
 # 3.  Parameter sweep – MANY RUNS
 # ------------------------------------------------------------
-n_runs   = 100        # ← how many repetitions per (Agent, FirstExperience, τ)
-tau_vals = [0.01, 0.03]
+n_runs   = 50        # ← how many repetitions per (Agent, FirstExperience, τ)
+tau_vals = [0.01,0.05,0.15,0.30]
 scenarios = [
     ("Healthy", "Positive"), ("Healthy", "Negative"),
     ("Anxious", "Positive"), ("Anxious", "Negative")
@@ -294,7 +310,7 @@ for agent, first_exp in scenarios:
             records.append(dict(Agent=agent,
                                 FirstExperience=first_exp,
                                 Tau=tau,
-                                Value_Improvement=dV,
+                                Total_Reward=dV,
                                 N_Replay=nrep))
 results = pd.DataFrame(records)
 
@@ -304,8 +320,8 @@ results = pd.DataFrame(records)
 agg = (
     results
     .groupby(["Agent", "FirstExperience", "Tau"])
-    .agg(mean_V   = ("Value_Improvement", "mean"),
-         se_V     = ("Value_Improvement", lambda x: x.std(ddof=1) / np.sqrt(len(x))),
+    .agg(mean_V   = ("Total_Reward", "mean"),
+         se_V     = ("Total_Reward", lambda x: x.std(ddof=1) / np.sqrt(len(x))),
          mean_R   = ("N_Replay",          "mean"),
          se_R     = ("N_Replay",          lambda x: x.std(ddof=1) / np.sqrt(len(x))))
     .reset_index()
@@ -332,9 +348,10 @@ for (agent, first), grp in agg.groupby(["Agent", "FirstExperience"]):
                  color=palette[agent], linestyle=style[first],
                  capsize=3, label=f"{agent} – {first}")
 plt.xlabel("τ  (replay / action time ratio)")
-plt.ylabel("Δ Value(s₀)  after episode   (mean ± SE)")
-plt.title(f"State-Value Improvement  (n = {n_runs} runs)")
+plt.ylabel("Total Reward   (mean ± SE)")
+plt.title(f"Performance  (n = {n_runs} runs)")
 plt.legend(); plt.grid(True)
+plt.savefig('changing_reward_braoder_set_value_diff.png',dpi=300)
 plt.show()
 # ---- (b) Total replay backups ------------------------------
 plt.figure()
@@ -348,6 +365,6 @@ plt.xlabel("τ  (replay / action time ratio)")
 plt.ylabel("Total replay backups   (mean ± SE)")
 plt.title(f"Replay Volume  (n = {n_runs} runs)")
 plt.legend(); plt.grid(True)
-
+plt.savefig('changing_reward_braoder_set_replays.png',dpi=300)
 plt.show()
 
