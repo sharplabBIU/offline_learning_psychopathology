@@ -11,15 +11,17 @@ GRID_SIZE   = 3
 ACTIONS     = {0: (-1, 0), 1: (0, 1), 2: (1, 0), 3: (0, -1)}  # U, R, D, L
 N_ACTIONS   = 4
 
-REWARD_SCALE = 2
+REWARD_SCALE = 10
 PROBABILITY_SCALE=0.3
 INIT_EXPERIENCE_EPISODE=1
-CHANGE_REWARD_INTERVAL=5
-TOTAL_EXPERIENCES_ONLINE=1
-TOTAL_EPISODES_ONLINE=50
+TOTAL_EXPERIENCES_ONLINE=10
+TOTAL_EPISODES_ONLINE=20
+CHANGE_REWARD_INTERVAL=TOTAL_EPISODES_ONLINE/6.0
 TOTAL_EXPERIENCES_OFFLINE_TRAINING=500
-GAMMA_POS=0.05
-GAMMA_NEG=0.95
+LEARNING_RATE=0.1
+
+GAMMA_ANX=0.50
+GAMMA_HEALTHY=0.50
 INV_TEMP=3
 # ----- helpers ------------------------------------------------
 
@@ -76,9 +78,9 @@ def simulate_condition(agent_type: str,
                        n_episodes: int = TOTAL_EPISODES_ONLINE,
                        n_steps: int = TOTAL_EXPERIENCES_ONLINE,
                        n_steps_explore: int = TOTAL_EXPERIENCES_OFFLINE_TRAINING,
-                       alpha_replay=0.5,
-                       gamma_pos: float = GAMMA_POS,
-                       gamma_neg: float = GAMMA_NEG,
+                       alpha: float = LEARNING_RATE,
+                       gam_anx: float = GAMMA_ANX,
+                       gam_healthy: float = GAMMA_HEALTHY,
                        gamma_learn: float = 0.99,
                        ep_init_rwd: int = INIT_EXPERIENCE_EPISODE,
                        change_rwd: int = CHANGE_REWARD_INTERVAL,
@@ -123,14 +125,10 @@ def simulate_condition(agent_type: str,
     memory       = []     # list of (s, a, r, s')
     total_replay = 0
     total_reward=0
-    gamma_curr   = gamma_pos
-    V_start      = 0
-    gam_pos=gamma_pos
-    gam_neg=gamma_neg
 
     # ---------- nested: replay burst -------------------------
     def replay_burst(curr_state):
-        nonlocal total_replay,gamma_curr,gam_neg,gam_pos,Q
+        nonlocal total_replay,gam_anx,gam_healthy,Q
         n_burst = 0
         V_cost  = max(np.dot(softmax(Q[curr_state], beta), Q[curr_state]), 0.0)
         old_policy=softmax(Q[curr_state], beta)
@@ -147,7 +145,7 @@ def simulate_condition(agent_type: str,
 
                 # dynamic α for this state (increment count *before* use)
                 # update_counts_RWD[s_mem] += 1
-                a_mem_lr = alpha_replay
+                a_mem_lr = alpha
                 q_new    = q_old + a_mem_lr * td
 
                 # gain of value after hypothetical update
@@ -157,21 +155,26 @@ def simulate_condition(agent_type: str,
                 gain           = (np.dot(softmax(q_tmp, beta), q_tmp) -
                                    np.dot(softmax(Q[s_mem], beta), q_tmp))
 
-                if (agent_type == "Anxious" and r_mem <= 0):
-                    g_now=gam_neg
+                if (agent_type == "Anxious" and r_mem < 0):
+                    g_now=gam_anx+0.45
+                elif (agent_type == "Anxious" and r_mem >= 0):
+                    g_now=gam_anx-0.45
                 else:
-                    g_now=gam_pos
+                    g_now=gam_healthy
 
                 evb   = need * gain
+
+                
                 
                 evb_c = (g_now ** tau) * evb - (1 - g_now ** tau) * V_cost
+                
                
                 if evb_c > best_evb_c: #retain just the best backup
                     best_evb_c, best_mem = evb_c, (s_mem, a_mem, q_new, r_mem)
-
-            if best_evb_c <= 0:
+            eps=0.000001
+            if best_evb_c <= 0+eps:
                 break  # nothing worth replaying
-                
+            
 
             # ---------- execute best backup ------------------
             s_b, a_b, q_new_b, r_b = best_mem
@@ -183,7 +186,7 @@ def simulate_condition(agent_type: str,
             
     # ---------- helper: perform one exploratory SR step ------
     def sr_train_step(s_t, a_t):
-        
+        nonlocal memory
         # 1. increment count & compute α
         update_counts_SR[s_t] += 1
         a_lr = alpha_SR(s_t)
@@ -195,17 +198,18 @@ def simulate_condition(agent_type: str,
             s_next, r_t = step_explore(s_t, a_t)
 
         
-        if (s_t, a_t, r_t, s_next) not in  memory:
-            memory.append((s_t, a_t, r_t, s_next))
+        
+        memory.append((s_t, a_t, r_t, s_next))
+        memory=memory[:15]
 
         # 3. Q update
-        td = r_t + gamma_curr * np.max(Q[s_next]) - Q[s_t + (a_t,)]
+        td = r_t + gamma_learn * np.max(Q[s_next]) - Q[s_t + (a_t,)]
         Q[s_t + (a_t,)] += a_lr * td
 
         # 4. SR update for current row
         idx_s, idx_snxt = state2idx[s_t], state2idx[s_next]
         SR[idx_s, idx_s] += a_lr * (1 - SR[idx_s, idx_s])
-        SR[idx_s, :]     += a_lr * (gamma_curr * SR[idx_snxt, :] - SR[idx_s, :])
+        SR[idx_s, :]     += a_lr * (gamma_learn * SR[idx_snxt, :] - SR[idx_s, :])
 
         # 5. policy‑guided next action / state
         a_next = np.random.choice(N_ACTIONS, p=softmax(Q[s_next], beta))
@@ -237,8 +241,11 @@ def simulate_condition(agent_type: str,
             if e==ep_init_rwd:
                 s_t, a_t = (1, 2), 2  # move left into –punishment
 
-        if e+1%change_rwd==0:
+        if (e+1)%change_rwd==0:
+            
             REWARD_ST, PUNISH_ST = sample_valence_states()
+            # PUNISH_ST=(4,4) #outside of grid - NO PUNISHMENT!
+
             # print("New reward @", REWARD_ST, "| punishment @", PUNISH_ST)
 
         for t in range(n_steps):
@@ -248,7 +255,7 @@ def simulate_condition(agent_type: str,
             # ----- count, α, and environment step --------------
             update_counts_RWD[s_t] += 1
             # a_lr = alpha_RWD(s_t) #if learning rate declines
-            a_lr=alpha_replay
+            a_lr=alpha
             s_next, r_t = step(s_t, a_t,t,REWARD_ST,PUNISH_ST)
             
             if s_next==s_t:
@@ -256,11 +263,11 @@ def simulate_condition(agent_type: str,
                 s_next, r_t = step(s_t, a_t,t,REWARD_ST,PUNISH_ST)
             
 
-            if (s_t, a_t, r_t, s_next) not in  memory:
-                memory.append((s_t, a_t, r_t, s_next))
+            memory.append((s_t, a_t, r_t, s_next))
+            memory=memory[:15]
 
             # ----- Q update -----------------------------------
-            td = r_t + gamma_curr * np.max(Q[s_next]) - Q[s_t + (a_t,)]
+            td = r_t + gamma_learn * np.max(Q[s_next]) - Q[s_t + (a_t,)]
             Q[s_t + (a_t,)] += a_lr * td
 
         
@@ -269,24 +276,29 @@ def simulate_condition(agent_type: str,
             # ----- SR update ----------------------------------
             idx_s, idx_snxt = state2idx[s_t], state2idx[s_next]
             SR[idx_s, idx_s] += a_lr * (1 - SR[idx_s, idx_s])
-            SR[idx_s, :]     += a_lr * (gamma_curr * SR[idx_snxt, :] - SR[idx_s, :])
+            SR[idx_s, :]     += a_lr * (gamma_learn * SR[idx_snxt, :] - SR[idx_s, :])
 
             # capture starting value (before any replay)
 
             # ----- replay burst --------------------------------
             replay_burst(s_t)
 
-            # discount factor adaptation for anxious agents
-            if agent_type == "Anxious":
-                gamma_curr = gamma_neg if r_t < 0 else gamma_pos
-
             # stop episode when winning reward
             if r_t!=0:
                 total_reward+=r_t
-            if r_t>0:
-                break
-            a_t = np.random.choice(N_ACTIONS, p=softmax(Q[s_next], beta))
-            s_t = s_next
+                a_t = np.random.choice(N_ACTIONS, p=softmax(Q[s_next], beta))
+                # all possible states in a 3×3 grid
+                all_states = [(i, j) for i in range(GRID_SIZE)
+                                    for j in range(GRID_SIZE)]
+                # exclude reward and punishment states
+                valid_states = [s for s in all_states
+                                if s != REWARD_ST and s != PUNISH_ST]
+                # pick one at random
+                s_t = random.choice(valid_states)
+
+            else:
+                a_t = np.random.choice(N_ACTIONS, p=softmax(Q[s_next], beta))
+                s_t = s_next
 
     # --------------------------------------------------------
     return total_reward, total_replay
@@ -295,7 +307,7 @@ def simulate_condition(agent_type: str,
 # ------------------------------------------------------------
 # 3.  Parameter sweep – MANY RUNS
 # ------------------------------------------------------------
-n_runs   = 50        # ← how many repetitions per (Agent, FirstExperience, τ)
+n_runs   = 100       # ← how many repetitions per (Agent, FirstExperience, τ)
 tau_vals = [0.01,0.05,0.15,0.30]
 scenarios = [
     ("Healthy", "Positive"), ("Healthy", "Negative"),
@@ -351,7 +363,7 @@ plt.xlabel("τ  (replay / action time ratio)")
 plt.ylabel("Total Reward   (mean ± SE)")
 plt.title(f"Performance  (n = {n_runs} runs)")
 plt.legend(); plt.grid(True)
-plt.savefig('changing_reward_braoder_set_value_diff.png',dpi=300)
+# plt.savefig('changing_reward_braoder_set_value_diff_AnxGammaDifferential_nobreak_onerun.png',dpi=300)
 plt.show()
 # ---- (b) Total replay backups ------------------------------
 plt.figure()
@@ -365,6 +377,6 @@ plt.xlabel("τ  (replay / action time ratio)")
 plt.ylabel("Total replay backups   (mean ± SE)")
 plt.title(f"Replay Volume  (n = {n_runs} runs)")
 plt.legend(); plt.grid(True)
-plt.savefig('changing_reward_braoder_set_replays.png',dpi=300)
+# plt.savefig('changing_reward_braoder_set_replays_AnxGammaDifferential_nobreak.png',dpi=300)
 plt.show()
 
