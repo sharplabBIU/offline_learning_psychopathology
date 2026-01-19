@@ -113,5 +113,5 @@ axes[1].set_ylabel('')
 axes[1].grid(True, alpha=0.3)
 
 plt.suptitle('Ambiguity (Reward Noise) Sustains the Demand for Replay', fontsize=16, y=1.02)
-plt.show()
 plt.savefig('noise_impact_gain.png',dpi=300,bbox_inches='tight')
+plt.show()
